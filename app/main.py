@@ -25,6 +25,17 @@ def health():
         "uptime_s": int(time.time() - START_TIME)
     }
 
+@app.get("/version")
+def version():
+    return {
+        "service_version": "v1.0.0",
+        "model": {
+            "name": "rf_engineered_fe",
+            "version": "2025-11-07",
+            "accuracy_test": 0.9949
+        }
+    }
+
 def build_features_from_raw(arr6):
     Va, Vb, Vc, Ia, Ib, Ic = arr6
     Va_abs, Vb_abs, Vc_abs = abs(Va), abs(Vb), abs(Vc)
