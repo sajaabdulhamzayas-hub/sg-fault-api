@@ -87,8 +87,9 @@ def build_features_from_raw(arr6):
     return np.array(feats, dtype=np.float32).reshape(1, -1)
 
 @app.get("/")
-def health():
+def root():
     return {"status": "ok"}
+
 
 @app.post("/predict")
 def predict(sample: Sample):
