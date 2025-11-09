@@ -4,6 +4,9 @@ from pydantic import BaseModel
 import numpy as np
 from joblib import load
 
+import time
+START_TIME = time.time()
+
 # تحميل الموديل المدرَّب على الميزات المشتقة
 model = load("best_model_fe.joblib")
 
@@ -12,6 +15,15 @@ app = FastAPI(title="SmartGrid Fault Detection (RF + FE)")
 class Sample(BaseModel):
     # 6 قراءات خام: [Va, Vb, Vc, Ia, Ib, Ic]
     x: list
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "service": "sg-fault-api",
+        "uptime_s": int(time.time() - START_TIME)
+    }
 
 def build_features_from_raw(arr6):
     Va, Vb, Vc, Ia, Ib, Ic = arr6
