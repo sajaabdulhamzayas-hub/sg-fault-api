@@ -4,3 +4,4 @@ scikit-learn
 joblib
 numpy
 pydantic
+pymongo[srv]==4.8.0
