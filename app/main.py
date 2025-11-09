@@ -1,41 +1,48 @@
 # app/main.py
+import os
+import time
+from datetime import datetime, timezone
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 import numpy as np
 from joblib import load
 
-import time
-START_TIME = time.time()
+# ====== إعداد MongoDB ======
+try:
+    from pymongo import MongoClient
+except Exception:
+    MongoClient = None  # لو المكتبة غير منصّبة بعد أثناء build
 
-# تحميل الموديل المدرَّب على الميزات المشتقة
+MONGO_URI  = os.getenv("MONGO_URI", "").strip()
+MONGO_DB   = os.getenv("MONGO_DB", "sg")
+MONGO_COLL = os.getenv("MONGO_COLL", "readings")
+
+mongo_ok = False
+coll = None
+if MongoClient and MONGO_URI:
+    try:
+        _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=4000)
+        _db = _client[MONGO_DB]
+        coll = _db[MONGO_COLL]
+        # ping سريع
+        _client.admin.command("ping")
+        mongo_ok = True
+    except Exception:
+        mongo_ok = False
+        coll = None
+
+# ====== نموذج التصنيف ======
+START_TIME = time.time()
 model = load("best_model_fe.joblib")
 
-app = FastAPI(title="SmartGrid Fault Detection (RF + FE)")
+app = FastAPI(title="SmartGrid Fault Detection (RF + FE)", version="1.0.2")
 
 class Sample(BaseModel):
     # 6 قراءات خام: [Va, Vb, Vc, Ia, Ib, Ic]
     x: list
-
-
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "service": "sg-fault-api",
-        "uptime_s": int(time.time() - START_TIME)
-    }
-
-@app.get("/version")
-def version():
-    return {
-        "service_version": "v1.0.2",  # ← غيّري الرقم هنا
-        "model": {
-            "name": "rf_engineered_fe",
-            "version": "2025-11-09",
-            "accuracy_test": 0.9949
-        }
-    }
-
+    device_id: str | None = None
+    ts: str | None = None  # ISO-8601 (اختياري)
 
 def build_features_from_raw(arr6):
     Va, Vb, Vc, Ia, Ib, Ic = arr6
@@ -54,7 +61,6 @@ def build_features_from_raw(arr6):
     V_mean_abs = (Va_abs + Vb_abs + Vc_abs) / 3.0
     I_mean_abs = (Ia_abs + Ib_abs + Ic_abs) / 3.0
 
-    # ما عدنا نافذة زمنية هنا → std = 0
     V_std = 0.0
     I_std = 0.0
 
@@ -91,6 +97,25 @@ def build_features_from_raw(arr6):
 def root():
     return {"status": "ok"}
 
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "service": "sg-fault-api",
+        "uptime_s": int(time.time() - START_TIME),
+        "mongo": "ok" if mongo_ok else "disabled"
+    }
+
+@app.get("/version")
+def version():
+    return {
+        "service_version": app.version,
+        "model": {
+            "name": "rf_engineered_fe",
+            "version": "2025-11-07",
+            "accuracy_test": 0.9949
+        }
+    }
 
 @app.post("/predict")
 def predict(sample: Sample):
@@ -98,4 +123,31 @@ def predict(sample: Sample):
     feats = build_features_from_raw(sample.x)
     pred = model.predict(feats)[0]
     probs = model.predict_proba(feats)[0].tolist() if hasattr(model, "predict_proba") else None
-    return {"pred_class": str(pred), "probs": probs}
+
+    # تحضير وثيقة التخزين
+    doc = {
+        "ts": sample.ts or datetime.now(timezone.utc).isoformat(),
+        "device_id": sample.device_id or "unknown",
+        "raw": sample.x,
+        "features": feats.flatten().tolist(),
+        "prediction": str(pred),
+        "probs": probs,
+        "service_version": app.version,
+    }
+
+    saved = False
+    inserted_id = None
+    if coll is not None:
+        try:
+            res = coll.insert_one(doc)
+            saved = True
+            inserted_id = str(res.inserted_id)
+        except Exception:
+            saved = False
+
+    return {
+        "pred_class": str(pred),
+        "probs": probs,
+        "saved": saved,
+        "id": inserted_id
+    }
