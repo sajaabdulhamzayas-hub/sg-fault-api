@@ -28,13 +28,14 @@ def health():
 @app.get("/version")
 def version():
     return {
-        "service_version": "v1.0.0",
+        "service_version": "v1.0.2",  # ← غيّري الرقم هنا
         "model": {
             "name": "rf_engineered_fe",
-            "version": "2025-11-07",
+            "version": "2025-11-09",
             "accuracy_test": 0.9949
         }
     }
+
 
 def build_features_from_raw(arr6):
     Va, Vb, Vc, Ia, Ib, Ic = arr6
