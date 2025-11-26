@@ -1,46 +1,60 @@
 # app/main.py
-from fastapi import FastAPI, Query
+import os
+import time
+from datetime import datetime, timezone
 
+from fastapi import FastAPI
 from pydantic import BaseModel
 import numpy as np
 from joblib import load
 
-import time
-START_TIME = time.time()
+# ==========================================
+# إعداد MongoDB  (مهم جداً)
+# ==========================================
+try:
+    from pymongo import MongoClient
+except Exception:
+    MongoClient = None
 
-# تحميل الموديل المدرَّب على الميزات المشتقة
+MONGO_URI  = os.getenv("MONGO_URI", "").strip()
+MONGO_DB   = os.getenv("MONGO_DB", "sg")
+MONGO_COLL = os.getenv("MONGO_COLL", "readings")
+
+mongo_ok = False
+coll = None
+if MongoClient and MONGO_URI:
+    try:
+        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
+        db = client[MONGO_DB]
+        coll = db[MONGO_COLL]
+        client.admin.command("ping")
+        mongo_ok = True
+    except Exception:
+        coll = None
+        mongo_ok = False
+
+# ==========================================
+# تحميل نموذج ML
+# ==========================================
+
+START_TIME = time.time()
 model = load("best_model_fe.joblib")
 
-app = FastAPI(title="SmartGrid Fault Detection (RF + FE)")
+app = FastAPI(title="SmartGrid Fault Detection", version="1.0.2")
+
 
 class Sample(BaseModel):
-    # 6 قراءات خام: [Va, Vb, Vc, Ia, Ib, Ic]
     x: list
-
-# مسار صحّة الخدمة
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "service": "sg-fault-api",
-        "uptime_s": int(time.time() - START_TIME)
-    }
+    device_id: str | None = None
+    ts: str | None = None
 
 
-@app.get("/version")
-def version():
-    return {
-        "service_version": "v1.0.0",
-        "model": {
-            "name": "rf_engineered_fe",
-            "version": "2025-11-07",
-            "accuracy_test": 0.9949
-        }
-    }
-
-
+# ==========================================
+# بناء الميزات Feature Engineering
+# ==========================================
 def build_features_from_raw(arr6):
     Va, Vb, Vc, Ia, Ib, Ic = arr6
+
     Va_abs, Vb_abs, Vc_abs = abs(Va), abs(Vb), abs(Vc)
     Ia_abs, Ib_abs, Ic_abs = abs(Ia), abs(Ib), abs(Ic)
 
@@ -56,7 +70,6 @@ def build_features_from_raw(arr6):
     V_mean_abs = (Va_abs + Vb_abs + Vc_abs) / 3.0
     I_mean_abs = (Ia_abs + Ib_abs + Ic_abs) / 3.0
 
-    # ما عدنا نافذة زمنية هنا → std = 0
     V_std = 0.0
     I_std = 0.0
 
@@ -89,41 +102,83 @@ def build_features_from_raw(arr6):
     ]
     return np.array(feats, dtype=np.float32).reshape(1, -1)
 
-@app.get("/last_readings")
-def last_readings(limit: int = Query(100, ge=1, le=1000)):
-    """
-    إرجاع آخر القراءات المخزّنة من MongoDB
-    """
-    if coll is None:
-        return {"error": "mongo_disabled", "items": []}
 
-    try:
-        cursor = (
-            coll.find({})
-            .sort("ts", -1)      # الأحدث أولاً
-            .limit(limit)
-        )
-        docs = list(cursor)
+# ==========================================
+# Endpoints
+# ==========================================
 
-        # تحويل ObjectId إلى نص
-        for d in docs:
-            d["_id"] = str(d.get("_id", ""))
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "service": "sg-fault-api",
+        "uptime_s": int(time.time() - START_TIME),
+        "mongo": "ok" if mongo_ok else "disabled"
+    }
 
-        return {
-            "count": len(docs),
-            "items": docs,
+
+@app.get("/version")
+def version():
+    return {
+        "service_version": app.version,
+        "model": {
+            "name": "rf_engineered_fe",
+            "version": "2025-11-07",
+            "accuracy_test": 0.9949
         }
-    except Exception as e:
-        return {
-            "error": f"mongo_error: {e.__class__.__name__}",
-            "items": [],
-        }
+    }
 
 
 @app.post("/predict")
 def predict(sample: Sample):
-    assert len(sample.x) == 6, "Send exactly 6 values: [Va,Vb,Vc,Ia,Ib,Ic]"
+    assert len(sample.x) == 6, "Send 6 values [Va,Vb,Vc,Ia,Ib,Ic]"
     feats = build_features_from_raw(sample.x)
+
     pred = model.predict(feats)[0]
-    probs = model.predict_proba(feats)[0].tolist() if hasattr(model, "predict_proba") else None
-    return {"pred_class": str(pred), "probs": probs}
+    probs = model.predict_proba(feats)[0].tolist()
+
+    # وثيقة تخزين
+    doc = {
+        "ts": sample.ts or datetime.now(timezone.utc).isoformat(),
+        "device_id": sample.device_id or "unknown",
+        "raw": sample.x,
+        "prediction": str(pred),
+        "probs": probs
+    }
+
+    saved = False
+    if coll:
+        try:
+            coll.insert_one(doc)
+            saved = True
+        except Exception:
+            saved = False
+
+    return {
+        "pred_class": str(pred),
+        "probs": probs,
+        "saved": saved
+    }
+
+
+@app.get("/last_readings")
+def last_readings(limit: int = 200):
+    """
+    يرجع آخر القراءات المرسلة إلى Mongo
+    """
+    if not coll:
+        return {"mongo": "disabled", "items": []}
+
+    try:
+        cursor = (
+            coll.find(
+                {},
+                {"_id": 0, "ts": 1, "device_id": 1, "raw": 1, "prediction": 1, "probs": 1}
+            )
+            .sort("ts", -1)
+            .limit(limit)
+        )
+        items = list(cursor)
+        return {"mongo": "ok", "count": len(items), "items": items}
+    except Exception as e:
+        return {"mongo": "error", "error": str(e), "items": []}
