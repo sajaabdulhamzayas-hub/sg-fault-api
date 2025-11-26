@@ -147,7 +147,7 @@ def predict(sample: Sample):
     }
 
     saved = False
-    if coll:
+    if coll is not None:
         try:
             coll.insert_one(doc)
             saved = True
@@ -166,8 +166,9 @@ def last_readings(limit: int = 200):
     """
     يرجع آخر القراءات المرسلة إلى Mongo
     """
-    if not coll:
+    if coll is None:
         return {"mongo": "disabled", "items": []}
+
 
     try:
         cursor = (
