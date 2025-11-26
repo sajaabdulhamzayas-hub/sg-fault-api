@@ -20,6 +20,10 @@ MONGO_COLL = os.getenv("MONGO_COLL", "readings")
 
 mongo_ok = False
 coll = None
+
+from typing import Optional  # ضيفي هذا في أعلى الملف لو بعده مو مضاف
+from fastapi import Query
+
 if MongoClient and MONGO_URI:
     try:
         _client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=4000)
@@ -116,6 +120,37 @@ def version():
             "accuracy_test": 0.9949
         }
     }
+
+@app.get("/last_readings")
+def last_readings(limit: int = Query(100, ge=1, le=1000)):
+    """
+    إرجاع آخر القراءات المخزّنة من MongoDB
+    """
+    if coll is None:
+        return {"error": "mongo_disabled", "items": []}
+
+    try:
+        cursor = (
+            coll.find({})
+            .sort("ts", -1)      # الأحدث أولاً
+            .limit(limit)
+        )
+        docs = list(cursor)
+
+        # تحويل ObjectId إلى نص
+        for d in docs:
+            d["_id"] = str(d.get("_id", ""))
+
+        return {
+            "count": len(docs),
+            "items": docs,
+        }
+    except Exception as e:
+        return {
+            "error": f"mongo_error: {e.__class__.__name__}",
+            "items": [],
+        }
+
 
 @app.post("/predict")
 def predict(sample: Sample):
