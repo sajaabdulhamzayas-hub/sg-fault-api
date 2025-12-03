@@ -272,3 +272,28 @@ def last_readings(
             "error": str(e),
             "items": [],
         }
+    from fastapi import Query
+
+@app.get("/alerts")
+def get_alerts(
+    limit: int = 200,
+    device_id: str | None = None,
+):
+    if coll_alerts is None:
+        return {"mongo": "disabled", "items": []}
+
+    query = {}
+    if device_id:
+        query["device_id"] = device_id
+
+    cur = (
+        coll_alerts.find(query, {"_id": 0})
+        .sort("_id", -1)
+        .limit(int(limit))
+    )
+
+    return {
+        "mongo": "ok",
+        "count": cur.count(),
+        "items": list(cur),
+    }
