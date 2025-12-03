@@ -22,17 +22,27 @@ MONGO_COLL = os.getenv("MONGO_COLL", "readings")
 
 mongo_ok = False
 coll = None
+coll_alerts = None
+
 if MongoClient and MONGO_URI:
     try:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
         db = client[MONGO_DB]
+
+        # القراءات (الفولت/التيار)
         coll = db[MONGO_COLL]
+
+        # مكان تنبيه الأعطال
+        coll_alerts = db["alerts"]
+
+        # Verify connection
         client.admin.command("ping")
         mongo_ok = True
-    except Exception:
-        coll = None
-        mongo_ok = False
 
+    except Exception as e:
+        coll = None
+        coll_alerts = None
+        mongo_ok = False
 # ==========================================
 # تحميل نموذج ML
 # ==========================================
@@ -102,6 +112,18 @@ def build_features_from_raw(arr6):
     ]
     return np.array(feats, dtype=np.float32).reshape(1, -1)
 
+from datetime import datetime
+
+def save_alert(device_id, phase, reason, value):
+    if coll_alerts:
+        coll_alerts.insert_one({
+            "ts": datetime.utcnow().isoformat(),
+            "device_id": device_id,
+            "phase": phase,
+            "reason": reason,
+            "value": value,
+            "level": "CRITICAL"
+        })
 
 # ==========================================
 # Endpoints
@@ -131,19 +153,49 @@ def version():
 
 @app.post("/predict")
 def predict(sample: Sample):
+    # نتأكد أنه وصل 6 قيم
     assert len(sample.x) == 6, "Send 6 values [Va,Vb,Vc,Ia,Ib,Ic]"
-    feats = build_features_from_raw(sample.x)
+    Va, Vb, Vc, Ia, Ib, Ic = sample.x
 
+    # بناء الميزات للنموذج
+    feats = build_features_from_raw(sample.x)
     pred = model.predict(feats)[0]
     probs = model.predict_proba(feats)[0].tolist()
 
-    # وثيقة تخزين
+    # ----- منطق التنبيهات البسيط -----
+    alerts: list[tuple[str, str, float]] = []
+
+    # Phase A
+    if Va < 195:
+        alerts.append(("A", "UNDER_VOLTAGE", Va))
+    if Va > 260:
+        alerts.append(("A", "OVER_VOLTAGE", Va))
+    if Ia > 3.0:
+        alerts.append(("A", "OVERCURRENT", Ia))
+
+    # Phase B
+    if Vb < 195:
+        alerts.append(("B", "UNDER_VOLTAGE", Vb))
+    if Vb > 260:
+        alerts.append(("B", "OVER_VOLTAGE", Vb))
+    if Ib > 3.0:
+        alerts.append(("B", "OVERCURRENT", Ib))
+
+    # Phase C (محجوز للمستقبل – حالياً دائماً صفر)
+    if Vc < 195:
+        alerts.append(("C", "UNDER_VOLTAGE", Vc))
+    if Vc > 260:
+        alerts.append(("C", "OVER_VOLTAGE", Vc))
+    if Ic > 3.0:
+        alerts.append(("C", "OVERCURRENT", Ic))
+
+    # وثيقة القراءة الأصلية
     doc = {
         "ts": sample.ts or datetime.now(timezone.utc).isoformat(),
         "device_id": sample.device_id or "unknown",
         "raw": sample.x,
         "prediction": str(pred),
-        "probs": probs
+        "probs": probs,
     }
 
     saved = False
@@ -154,10 +206,16 @@ def predict(sample: Sample):
         except Exception:
             saved = False
 
+    # حفظ التنبيهات في مجموعة alerts
+    for phase, reason, value in alerts:
+        save_alert(doc["device_id"], phase, reason, value)
+
+    # نرجّع عدد التنبيهات فقط
     return {
         "pred_class": str(pred),
         "probs": probs,
-        "saved": saved
+        "saved": saved,
+        "alerts": len(alerts),
     }
 
 
