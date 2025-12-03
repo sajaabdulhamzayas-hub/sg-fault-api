@@ -161,25 +161,51 @@ def predict(sample: Sample):
     }
 
 
+from fastapi import FastAPI, Query
+# ... بقية الاستيرادات كما هي ...
+
 @app.get("/last_readings")
-def last_readings(limit: int = 200):
+def last_readings(
+    limit: int = 200,
+    device_id: str | None = None,
+):
     """
-    يرجع آخر القراءات المرسلة إلى Mongo
+    يعيد آخر القراءات المخزنة من MongoDB (حتى limit قراءة)،
+    مرتّبة تنازليًا حسب وقت الإدخال (_id).
+    يمكن اختيارياً التصفية حسب device_id.
     """
     if coll is None:
         return {"mongo": "disabled", "items": []}
 
+    query = {}
+    if device_id:
+        query["device_id"] = device_id
 
     try:
         cursor = (
             coll.find(
-                {},
-                {"_id": 0, "ts": 1, "device_id": 1, "raw": 1, "prediction": 1, "probs": 1}
+                query,
+                {
+                    "_id": 0,           # لا نرجّع _id في الـ JSON
+                    "ts": 1,
+                    "device_id": 1,
+                    "raw": 1,
+                    "prediction": 1,
+                    "probs": 1,
+                },
             )
-            .sort("ts", -1)
-            .limit(limit)
+            .sort("_id", -1)          # الأجدد أولاً بناءً على ObjectId
+            .limit(int(limit))
         )
         items = list(cursor)
-        return {"mongo": "ok", "count": len(items), "items": items}
+        return {
+            "mongo": "ok",
+            "count": len(items),
+            "items": items,
+        }
     except Exception as e:
-        return {"mongo": "error", "error": str(e), "items": []}
+        return {
+            "mongo": "error",
+            "error": str(e),
+            "items": [],
+        }
