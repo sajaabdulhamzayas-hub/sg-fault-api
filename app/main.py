@@ -66,18 +66,23 @@ class Sample(BaseModel):
 def build_features_from_raw(arr6):
     Va, Vb, Vc, Ia, Ib, Ic = arr6
 
+    # absolute values
     Va_abs, Vb_abs, Vc_abs = abs(Va), abs(Vb), abs(Vc)
     Ia_abs, Ib_abs, Ic_abs = abs(Ia), abs(Ib), abs(Ic)
 
+    # phase differences
     Vab, Vbc, Vca = Va - Vb, Vb - Vc, Vc - Va
     Iab, Ibc, Ica = Ia - Ib, Ib - Ic, Ic - Ia
 
+    # sums
     V_sum = Va + Vb + Vc
     I_sum = Ia + Ib + Ic
 
-    V_rss = (Va*2 + Vb2 + Vc*2) ** 0.5
-    I_rss = (Ia*2 + Ib2 + Ic*2) ** 0.5
+    # root-sum-square
+    V_rss = (Va**2 + Vb**2 + Vc**2) ** 0.5
+    I_rss = (Ia**2 + Ib**2 + Ic**2) ** 0.5
 
+    # mean absolute values
     V_mean_abs = (Va_abs + Vb_abs + Vc_abs) / 3.0
     I_mean_abs = (Ia_abs + Ib_abs + Ic_abs) / 3.0
 
@@ -85,6 +90,7 @@ def build_features_from_raw(arr6):
     V_std = 0.0
     I_std = 0.0
 
+    # imbalance ratios
     eps = 1e-9
     V_max = max(Va_abs, Vb_abs, Vc_abs) + eps
     V_min = min(Va_abs, Vb_abs, Vc_abs) + eps
@@ -94,16 +100,19 @@ def build_features_from_raw(arr6):
     V_imbalance = V_max / V_min
     I_imbalance = I_max / I_min
 
+    # apparent power per phase
     Sa = Va_abs * Ia_abs
     Sb = Vb_abs * Ib_abs
     Sc = Vc_abs * Ic_abs
     S_total = Sa + Sb + Sc
 
+    # current shares
     I_total = Ia_abs + Ib_abs + Ic_abs + eps
     Ia_share = Ia_abs / I_total
     Ib_share = Ib_abs / I_total
     Ic_share = Ic_abs / I_total
 
+    # voltage shares
     V_total = Va_abs + Vb_abs + Vc_abs + eps
     Va_share = Va_abs / V_total
     Vb_share = Vb_abs / V_total
@@ -118,7 +127,6 @@ def build_features_from_raw(arr6):
         Ia_share, Ib_share, Ic_share, Va_share, Vb_share, Vc_share,
     ]
     return np.array(feats, dtype=np.float32).reshape(1, -1)
-
 
 def save_alert(device_id: str, phase: str, reason: str, value: float):
     """Insert simple alert document into 'alerts' collection."""
