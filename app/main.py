@@ -177,7 +177,7 @@ def predict(sample: Sample):
     pred = model.predict(feats)[0]
     probs = model.predict_proba(feats)[0].tolist()
 
-    # 3) unpack raw values
+    # 3) unpack raw values (for simple alert rules)
     try:
         Va, Vb, Vc, Ia, Ib, Ic = sample.x
     except Exception:
@@ -195,14 +195,15 @@ def predict(sample: Sample):
         if Ia > 4.0:
             save_alert(device_id, "A", "OVERCURRENT", Ia)
             alerts_created += 1
-
-        # يمكن التوسّع لاحقاً لـ B و C لو حبيتي
+        # يمكن التوسّع لاحقاً لـ B و C لو أحببتِ
     except Exception:
         pass
 
-    # 5) store main reading
+    # 5) use server-side UTC time for ts (IMPORTANT for dashboard plots)
+    ts_server = datetime.now(timezone.utc).isoformat()
+
     doc = {
-        "ts": sample.ts or datetime.now(timezone.utc).isoformat(),
+        "ts": ts_server,          # لا نستخدم sample.ts بعد الآن
         "device_id": device_id,
         "raw": sample.x,
         "prediction": str(pred),
@@ -223,8 +224,8 @@ def predict(sample: Sample):
         "probs": probs,
         "saved": saved,
         "alerts_created": alerts_created,
+        "ts": ts_server,   # اختياري، مفيد لو حبيتِ تشوفيه في الـ Serial أو الـ tests
     }
-
 
 @app.get("/last_readings")
 def last_readings(
