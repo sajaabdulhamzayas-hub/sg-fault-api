@@ -75,8 +75,8 @@ def build_features_from_raw(arr6):
     V_sum = Va + Vb + Vc
     I_sum = Ia + Ib + Ic
 
-    V_rss = (Va**2 + Vb**2 + Vc**2) ** 0.5
-    I_rss = (Ia**2 + Ib**2 + Ic**2) ** 0.5
+    V_rss = (Va*2 + Vb2 + Vc*2) ** 0.5
+    I_rss = (Ia*2 + Ib2 + Ic*2) ** 0.5
 
     V_mean_abs = (Va_abs + Vb_abs + Vc_abs) / 3.0
     I_mean_abs = (Ia_abs + Ib_abs + Ic_abs) / 3.0
