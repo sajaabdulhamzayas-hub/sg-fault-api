@@ -1,14 +1,21 @@
 # app/main.py
 import os
 import time
+import warnings
 from datetime import datetime, timezone
 from typing import Optional, List
 
 import numpy as np
-import pandas as pd
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, conlist
 from joblib import load
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+# اخفاء تحذير sklearn الخاص بـ feature names (مو خطأ)
+warnings.filterwarnings(
+    "ignore",
+    message="X does not have valid feature names*",
+    category=UserWarning,
+)
 
 # ==========================================
 # MongoDB setup
@@ -30,10 +37,8 @@ if MongoClient and MONGO_URI:
     try:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
         db = client[MONGO_DB]
-
         coll = db[MONGO_COLL]
         coll_alerts = db["alerts"]
-
         client.admin.command("ping")
         mongo_ok = True
     except Exception:
@@ -51,34 +56,15 @@ app = FastAPI(title="SmartGrid Fault Detection", version="1.0.3")
 
 
 class Sample(BaseModel):
-    x: conlist(float, min_length=6, max_length=6) = Field(
-        ...,
-        description="Send 6 values in this order: [Va, Vb, Vc, Ia, Ib, Ic]",
-        examples=[[241.7, 241.7, 241.7, 1.117, 0.0, 0.0]],
-    )
-    device_id: Optional[str] = Field(default=None, examples=["esp32-AB-lab"])
-    ts: Optional[str] = Field(default=None, examples=["2595587"])
-
-
-# نفس ترتيب Features في التدريب (X_fe)
-FEATURE_COLS = [
-    "Va_abs", "Vb_abs", "Vc_abs", "Ia_abs", "Ib_abs", "Ic_abs",
-    "Vab", "Vbc", "Vca", "Iab", "Ibc", "Ica",
-    "V_sum", "I_sum",
-    "V_rss", "I_rss",
-    "V_mean_abs", "I_mean_abs",
-    "V_std", "I_std",
-    "V_imbalance", "I_imbalance",
-    "Sa", "Sb", "Sc", "S_total",
-    "Ia_share", "Ib_share", "Ic_share",
-    "Va_share", "Vb_share", "Vc_share",
-]
+    x: List[float]
+    device_id: Optional[str] = None
+    ts: Optional[str] = None
 
 
 # ==========================================
-# Feature engineering (مطابق للتدريب)
+# Feature engineering (مطابق للتدريب قدر الإمكان)
 # ==========================================
-def build_features_from_raw(arr6: List[float]) -> List[float]:
+def build_features_from_raw(arr6: List[float]) -> np.ndarray:
     Va, Vb, Vc, Ia, Ib, Ic = arr6
 
     Va_abs, Vb_abs, Vc_abs = abs(Va), abs(Vb), abs(Vc)
@@ -127,16 +113,12 @@ def build_features_from_raw(arr6: List[float]) -> List[float]:
     feats = [
         Va_abs, Vb_abs, Vc_abs, Ia_abs, Ib_abs, Ic_abs,
         Vab, Vbc, Vca, Iab, Ibc, Ica,
-        V_sum, I_sum,
-        V_rss, I_rss,
-        V_mean_abs, I_mean_abs,
-        V_std, I_std,
-        V_imbalance, I_imbalance,
+        V_sum, I_sum, V_rss, I_rss, V_mean_abs, I_mean_abs,
+        V_std, I_std, V_imbalance, I_imbalance,
         Sa, Sb, Sc, S_total,
-        Ia_share, Ib_share, Ic_share,
-        Va_share, Vb_share, Vc_share,
+        Ia_share, Ib_share, Ic_share, Va_share, Vb_share, Vc_share,
     ]
-    return feats
+    return np.array(feats, dtype=np.float32).reshape(1, -1)
 
 
 def save_alert(device_id: str, phase: str, reason: str, value: float):
@@ -184,31 +166,25 @@ def version():
 
 @app.post("/predict")
 def predict(sample: Sample):
-    # validation (يعطي 422 بدل 500)
+    # 422 واضح بدل assert/500
     if sample.x is None or len(sample.x) != 6:
         raise HTTPException(
             status_code=422,
             detail="x must contain exactly 6 values in order: [Va, Vb, Vc, Ia, Ib, Ic]",
         )
 
-    device_id = sample.device_id or "unknown"
-
-    # feature engineering + prediction (DataFrame => ماكو warning feature names)
     feats = build_features_from_raw(sample.x)
-    X = pd.DataFrame([feats], columns=FEATURE_COLS)
+    pred = model.predict(feats)[0]
+    probs = model.predict_proba(feats)[0].tolist()
 
-    pred = model.predict(X)[0]
-    probs = model.predict_proba(X)[0].tolist()
-
-    # raw unpack (alerts rules)
     Va, Vb, Vc, Ia, Ib, Ic = sample.x
+    device_id = sample.device_id or "unknown"
 
     alerts_created = 0
     try:
         if Va > 260:
             save_alert(device_id, "A", "OVER_VOLTAGE", Va)
             alerts_created += 1
-
         if Ia > 4.0:
             save_alert(device_id, "A", "OVERCURRENT", Ia)
             alerts_created += 1
@@ -253,10 +229,7 @@ def last_readings(limit: int = 200, device_id: Optional[str] = None):
 
     try:
         cursor = (
-            coll.find(
-                query,
-                {"_id": 0, "ts": 1, "device_id": 1, "raw": 1, "prediction": 1, "probs": 1},
-            )
+            coll.find(query, {"_id": 0, "ts": 1, "device_id": 1, "raw": 1, "prediction": 1, "probs": 1})
             .sort("_id", -1)
             .limit(int(limit))
         )
@@ -267,7 +240,7 @@ def last_readings(limit: int = 200, device_id: Optional[str] = None):
 
 
 @app.get("/alerts")
-def get_alerts(limit: int = 200, device_id: str | None = None):
+def get_alerts(limit: int = 200, device_id: Optional[str] = None):
     if coll_alerts is None:
         return {"mongo": "disabled", "items": []}
 
